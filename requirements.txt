@@ -1,0 +1,7 @@
+geopandas>=1.0
+pyogrio>=0.9
+pyproj
+shapely>=2
+pandas
+numpy
+pytest

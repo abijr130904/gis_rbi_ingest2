@@ -1,0 +1,63 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# =========================
+# Environment & secrets
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# GIS data (JANGAN PUSH)
+# =========================
+arsip/
+data/
+merged_output/
+
+# Temporary & partial files
+*.partial
+*.tmp
+*.temp
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# IDE & editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# OS
+# =========================
+Thumbs.db
+.DS_Store
+Desktop.ini
