@@ -2,6 +2,13 @@
 
 ```powershell
 cd D:\Developer\python_project\gis_rbi_ingest
+
+python -m venv .venv
+
+.\.venv\Scripts\Activate.ps1
+
+python -m pip install --upgrade pip
+
 pip install -r requirements-merge.txt
 
 # 1) selalu dry-run dulu
@@ -19,3 +26,4 @@ python merge_shp.py --input "D:\Developer\python_project\gis_rbi_ingest\data" `
 # test
 python -m pytest tests -q
 ```
+
