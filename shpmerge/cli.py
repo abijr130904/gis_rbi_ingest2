@@ -35,6 +35,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-verify", dest="verify", action="store_false", help="lewati verifikasi baca-ulang")
     p.add_argument("--dissolve", action=argparse.BooleanOptionalAction, default=True,
                    help="dissolve kategori poligon ke <output>\\dissolved (nonaktifkan: --no-dissolve)")
+    p.add_argument("--dissolve-ignore", default="",
+                   help="kolom yang diabaikan saat dissolve, pisahkan koma (mis. NOLEMBAR,SHEET)")
+    p.add_argument("--dissolve-overlap", action=argparse.BooleanOptionalAction, default=True,
+                   help="satukan fitur yang saling tumpang tindih (nonaktifkan: --no-dissolve-overlap)")
+    p.add_argument("--dissolve-overlap-min", type=float, default=0.01,
+                   help="irisan minimum sebagai pecahan luas bentuk terkecil agar dianggap tumpang tindih "
+                        "(bawaan 0.01 = 1%%; 0 = semua irisan berluas positif)")
     p.add_argument("--verbose", action="store_true")
     return p
 
@@ -74,7 +81,12 @@ def main(argv=None) -> int:
                 strict_schema=a.strict_schema, allow_schema_union=a.allow_schema_union,
                 allow_unknown_crs=a.allow_unknown_crs, skip_bad_files=a.skip_bad_files,
                 suggest_similar=a.suggest_similar, chunk_size=a.chunk_size,
-                source_encoding=a.source_encoding, verify=a.verify)
+                source_encoding=a.source_encoding, verify=a.verify,
+                dissolve=a.dissolve,
+                dissolve_ignore=[c.strip() for c in a.dissolve_ignore.split(",") if c.strip()],
+                dissolve_overlap=a.dissolve_overlap,
+                dissolve_overlap_min=a.dissolve_overlap_min)
+
     result = run_pipeline(o)
     print_summary(result)
     report = o.report

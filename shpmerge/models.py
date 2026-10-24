@@ -27,6 +27,9 @@ class Options:
     source_encoding: str | None = None
     verify: bool = True
     dissolve: bool = True
+    dissolve_ignore: list[str] = field(default_factory=list)
+    dissolve_overlap: bool = True
+    dissolve_overlap_min: float = 0.01
 
 
 @dataclass

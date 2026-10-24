@@ -8,14 +8,14 @@ from shpmerge.pipeline import run_pipeline
 N = "ADMINISTRASI_LN_50K"
 
 
-def make(tmp, region, name=N, n=3, crs="EPSG:4326", geom="line", cols=None, depth=None, offset=0):
+def make(tmp, region, name=N, n=3, crs="EPSG:4326", geom="line", cols=None, depth=None, offset=0, x0=0):
     d = tmp.joinpath("data", region, *(depth or [region, region]))
     d.mkdir(parents=True, exist_ok=True)
     cols = cols or {"NAMA": [f"{region}_{i}" for i in range(n)], "NILAI": list(range(offset, offset + n))}
     if geom == "line":
         geoms = [LineString([(i, 0), (i + 1, 1)]) for i in range(n)]
     elif geom == "poly":
-        geoms = [Polygon([(i, 0), (i + 1, 0), (i + 1, 1), (i, 1)]) for i in range(n)]
+        geoms = [Polygon([(x0 + i, 0), (x0 + i + 1, 0), (x0 + i + 1, 1), (x0 + i, 1)]) for i in range(n)]
     else:
         geoms = [Point(i, i) for i in range(n)]
     gpd.GeoDataFrame(cols, geometry=geoms, crs=crs).to_file(d / f"{name}.shp")
@@ -209,15 +209,43 @@ def test_tiny_float_precision_within_dbf_limit(tmp_path):
     c = cat(run(tmp_path))
     assert c["status"] == "MERGED" and c["output_features"] == 6
 
-def test_dissolve_polygon_by_default(tmp_path):
-    make(tmp_path, "KAB_A", geom="poly")
-    make(tmp_path, "KAB_B", geom="poly", offset=10)
+def _same(n):
+    return {"NAMA": ["x"] * n, "NILAI": [1] * n}
+
+
+def _dissolved(tmp, out="out"):
+    return gpd.read_file(tmp / out / "dissolved" / f"{N}.shp")
+
+
+def test_dissolve_keeps_region_borders(tmp_path):
+    make(tmp_path, "KAB_A", geom="poly", cols=_same(3), x0=0, crs="EPSG:3857")
+    make(tmp_path, "KAB_B", geom="poly", cols=_same(3), x0=3, crs="EPSG:3857")  # menempel di KAB_A
     c = cat(run(tmp_path))
     assert c["status"] == "MERGED" and c["output_features"] == 6
-    d = gpd.read_file(tmp_path / "out" / "dissolved" / f"{N}.shp")
-    assert len(d) == 1 and d["JML_FITUR"].iloc[0] == 6
-    assert abs(d.geometry.area.iloc[0] - 3.0) < 1e-9
+    d = _dissolved(tmp_path)
+    assert len(d) == 2 and sorted(d["JML_FITUR"]) == [3, 3]
+    assert all(abs(a - 3.0) < 1e-9 for a in d.geometry.area)
     assert len(gpd.read_file(out_path(tmp_path))) == 6  # file gabungan tetap utuh
+
+
+def test_dissolve_does_not_merge_different_attributes(tmp_path):
+    make(tmp_path, "KAB_A", geom="poly", cols={"NAMA": ["a", "a", "b"], "NILAI": [1, 1, 1]}, crs="EPSG:3857")
+    make(tmp_path, "KAB_B", geom="poly", cols=_same(3), x0=10, crs="EPSG:3857")
+    cat(run(tmp_path))
+    d = _dissolved(tmp_path)
+    assert len(d) == 3
+    a = d[(d["SRC_REGION"] == "KAB_A") & (d["NAMA"] == "a")]
+    assert a["JML_FITUR"].iloc[0] == 2 and abs(a.geometry.area.iloc[0] - 2.0) < 1e-9
+
+
+def test_dissolve_ignore_column(tmp_path):
+    cols = {"NAMA": ["x"] * 3, "LEMBAR": [1, 2, 3]}
+    make(tmp_path, "KAB_A", geom="poly", cols=cols, crs="EPSG:3857")
+    make(tmp_path, "KAB_B", geom="poly", cols=cols, x0=3, crs="EPSG:3857")
+    run(tmp_path)
+    assert len(_dissolved(tmp_path)) == 6  # LEMBAR berbeda -> tidak menyatu
+    run(tmp_path, output_dir=tmp_path / "o2", dissolve_ignore=["LEMBAR"])
+    assert len(_dissolved(tmp_path, "o2")) == 2  # satu per wilayah
 
 
 def test_dissolve_skipped_for_lines_and_when_disabled(tmp_path):
@@ -229,3 +257,19 @@ def test_dissolve_skipped_for_lines_and_when_disabled(tmp_path):
     make(tmp_path, "KAB_D", name="POLY_AR_50K", geom="poly")
     run(tmp_path, dissolve=False)
     assert not (tmp_path / "out" / "dissolved" / "POLY_AR_50K.shp").exists()
+
+def test_dissolve_merges_overlapping_features_across_regions(tmp_path):
+    make(tmp_path, "KAB_A", geom="poly", cols={"NAMA": ["a"] * 3, "NILAI": [1] * 3}, x0=0, crs="EPSG:3857")
+    make(tmp_path, "KAB_B", geom="poly", cols={"NAMA": ["b"] * 3, "NILAI": [2] * 3}, x0=2, crs="EPSG:3857")
+    cat(run(tmp_path))
+    d = _dissolved(tmp_path)
+    assert len(d) == 1 and abs(d.geometry.area.iloc[0] - 5.0) < 1e-9
+    assert d["JML_FITUR"].iloc[0] == 6 and d["ATR_CAMPUR"].iloc[0] == 1
+    assert d["NAMA"].isna().iloc[0]
+
+
+def test_dissolve_sliver_overlap_below_threshold_not_merged(tmp_path):
+    make(tmp_path, "KAB_A", geom="poly", cols=_same(3), x0=0, crs="EPSG:3857")
+    make(tmp_path, "KAB_B", geom="poly", cols=_same(3), x0=2.999, crs="EPSG:3857")  # irisan 0,001 dari 3
+    cat(run(tmp_path))
+    assert len(_dissolved(tmp_path)) == 2

@@ -3,6 +3,10 @@
 ```powershell
 cd D:\Developer\python_project\gis_rbi_ingest
 
+pyhton --version
+
+winges install pyhton.python.3.12
+
 python -m venv .venv
 
 .\.venv\Scripts\Activate.ps1
