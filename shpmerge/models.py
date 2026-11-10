@@ -20,6 +20,7 @@ class Options:
     categories: list[str] = field(default_factory=list)
     strict_schema: bool = False
     allow_schema_union: bool = False
+    force_merge: bool = False
     allow_unknown_crs: bool = False
     skip_bad_files: bool = False
     suggest_similar: bool = False
@@ -30,15 +31,23 @@ class Options:
     dissolve_ignore: list[str] = field(default_factory=list)
     dissolve_overlap: bool = True
     dissolve_overlap_min: float = 0.01
+    dissolve_seams: bool = True
+    only_dissolved: bool = False
+    output_format: str = "shp"  # "shp" atau "gdb" (CLI memakai "gdb" sebagai bawaan)
+
+    @property
+    def is_gdb(self) -> bool:
+        return self.output_format == "gdb"
 
 
 @dataclass
 class SourceFile:
-    path: Path
-    rel: str  # path relatif terhadap folder input (posix)
-    stem: str
-    region_hint: str  # HANYA petunjuk dari nama folder, bukan wilayah administrasi valid
+    path: Path               # file .shp, atau folder .gdb
+    rel: str                 # path relatif terhadap folder input (posix)
+    stem: str                # nama file .shp, atau nama layer .gdb
+    region_hint: str         # HANYA petunjuk dari nama folder, bukan wilayah administrasi valid
     key: str = ""
+    layer: str | None = None  # nama layer jika sumber berupa .gdb
     info: dict[str, Any] | None = None
     error: str | None = None
     size_shp: int = 0
@@ -65,6 +74,7 @@ class SourceFile:
     def to_dict(self) -> dict[str, Any]:
         return {
             "file": self.rel,
+            "layer": self.layer,
             "region_hint": self.region_hint,
             "features": self.features,
             "crs": self.crs,
@@ -86,7 +96,10 @@ class Group:
     warnings: list[str] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)
     schema: list[tuple[str, str]] = field(default_factory=list)  # (nama, family int/float/date/text)
+    int_width: dict[str, int] = field(default_factory=dict)       # lebar bit kolom integer (khusus GDB)
     crs_out: str | None = None
+    drop_z: bool = False
+    field_aliases: dict[str, dict[str, str]] = field(default_factory=dict)
     output: str | None = None
     output_features: int | None = None
     dissolved_output: str | None = None

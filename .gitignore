@@ -36,6 +36,8 @@ htmlcov/
 arsip/
 data/
 merged_output/
+merged_output/
+dissolved/
 
 # Temporary & partial files
 *.partial

@@ -1,21 +1,49 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
+from pathlib import Path
 
 from pyproj import CRS
 
 from .detect import group_files, normalize_name, safe_output_name, suggest_similar
 from .discovery import find_shapefiles
-from .merge import copy_single, existing_outputs, merge_group
+from .merge import copy_single, existing_outputs, finalize_output, merge_group, out_ext
 from .models import Group, Options
 from .validate import inspect_file, validate_group
 
 from .dissolve import dissolve_group, is_polygon_group
 
 log = logging.getLogger("shpmerge")
+
+
+def _only_dissolved(g: Group, o: Options, out_dir: Path, writer) -> None:
+    """Stage polygon merge, then publish only dissolve or raw fallback output."""
+    with tempfile.TemporaryDirectory(prefix=".shpmerge_only_", dir=out_dir) as tmp_name:
+        stage = Path(tmp_name)
+        writer(g, o, stage)
+        if not g.output:
+            return
+
+        dissolve_group(g, o, stage, target_dir=out_dir)
+        if g.dissolved_output:
+            g.output = g.dissolved_output
+            g.output_features = g.dissolved_features
+            return
+
+        # No geometries were joined, or dissolve failed: keep the verified raw merge.
+        try:
+            finalize_output(stage, out_dir, g.out_name, o)
+            g.output = str(out_dir / f"{g.out_name}{out_ext(o)}")
+            g.warnings.append("ONLY_DISSOLVED: hasil gabungan disimpan apa adanya karena dissolve tidak menghasilkan output")
+        except Exception as exc:  # noqa: BLE001
+            g.status = "FAILED"
+            g.reasons.append(f"{type(exc).__name__}: {exc}")
+            g.output = None
+            log.error("Gagal memfinalisasi output %s: %s", g.key, exc)
 
 
 def run_pipeline(o: Options) -> dict:
@@ -65,15 +93,21 @@ def run_pipeline(o: Options) -> dict:
                     g.reasons.append("OUTPUT_SUDAH_ADA: gunakan --overwrite")
                     continue
             if not o.dry_run:
-                log.info("Merge %s -> %s.shp", g.key, g.out_name)
-                merge_group(g, o, out_dir)
-                if g.status == "MERGED":
-                    dissolve_group(g, o, out_dir)
+                log.info("Merge %s -> %s%s", g.key, g.out_name, out_ext(o))
+                if o.only_dissolved and o.dissolve and is_polygon_group(g):
+                    _only_dissolved(g, o, out_dir, merge_group)
+                else:
+                    merge_group(g, o, out_dir)
+                    if g.status == "MERGED":
+                        dissolve_group(g, o, out_dir)
             elif o.dissolve and is_polygon_group(g):
-                g.warnings.append(f"RENCANA: dissolve ke dissolved\\{g.out_name}.shp")
+                target = g.out_name if o.only_dissolved else f"dissolved\\{g.out_name}"
+                g.warnings.append(f"RENCANA: dissolve ke {target}{out_ext(o)}")
         elif g.status == "SINGLE_SOURCE" and o.include_single and not o.dry_run:
             if has_out and not o.overwrite:
                 g.warnings.append("OUTPUT_SUDAH_ADA: tidak disalin (butuh --overwrite)")
+            elif o.only_dissolved and o.dissolve and is_polygon_group(g):
+                _only_dissolved(g, o, out_dir, copy_single)
             else:
                 copy_single(g, o, out_dir)
                 if g.output:

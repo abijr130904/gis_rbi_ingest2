@@ -8,6 +8,7 @@ from collections import defaultdict
 from .models import SourceFile
 
 _INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_LAYER_BAD = re.compile(r"[^A-Za-z0-9_]")
 _RESERVED = {"con", "prn", "aux", "nul",
              *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
 
@@ -34,6 +35,14 @@ def safe_output_name(key: str) -> str:
     if not name or name.lower() in _RESERVED:
         name = "_" + name
     return name
+
+
+def safe_layer_name(key: str) -> str:
+    """Nama layer/folder .gdb: huruf, angka, underscore; diawali huruf; bukan awalan GDB_."""
+    name = _LAYER_BAD.sub("_", key.upper()).strip("_") or "LAYER"
+    if not name[0].isalpha() or name.startswith("GDB_"):
+        name = "L_" + name
+    return name[:60]
 
 
 def suggest_similar(keys, threshold: float = 0.85) -> list[dict]:

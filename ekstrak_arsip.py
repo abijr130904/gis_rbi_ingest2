@@ -207,6 +207,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -342,6 +343,84 @@ def ekstrak_7z(exe, arsip: Path, tujuan: Path, password):
 
 
 
+def pindahkan_hasil(sementara: Path, tujuan: Path, timeout=30):
+    """Pasang folder hasil, menunggu Windows melepas lock sementara."""
+    batas = time.monotonic() + timeout
+    jeda = 0.5
+    while True:
+        try:
+            sementara.rename(tujuan)
+            return
+        except OSError as e:
+            # WinError 5/32 dapat terjadi saat antivirus/indexer memindai GDB.
+            lock_sementara = (
+                e.winerror in (5, 32)
+                if os.name == "nt"
+                else isinstance(e, PermissionError)
+            )
+            if not lock_sementara:
+                raise
+            if tujuan.exists() or time.monotonic() >= batas:
+                raise
+            time.sleep(jeda)
+            jeda = min(jeda * 1.5, 3)
+
+
+def ekstrak_satu_arsip(arsip: Path, tujuan: Path, exe7z, password):
+    """Ekstrak satu arsip ke folder tujuan yang sudah dibuat."""
+    if arsip.suffix.lower() == ".zip":
+        try:
+            ekstrak_zip(arsip, tujuan, password)
+        except NotImplementedError:
+            if not exe7z:
+                raise
+            ekstrak_7z(exe7z, arsip, tujuan, password)
+    elif arsip.suffix.lower() == ".rar":
+        if not exe7z:
+            raise RuntimeError("7-Zip tidak ditemukan untuk ekstrak RAR")
+        ekstrak_7z(exe7z, arsip, tujuan, password)
+
+
+def ekstrak_arsip_dalam(folder: Path, exe7z, password):
+    """Buka arsip bersarang di tempat, mempertahankan struktur folder."""
+    antrean = [(p, 1) for p in folder.rglob("*")
+               if p.is_file() and p.suffix.lower() in EKSTENSI]
+    sudah_diproses = set()
+    batas_kedalaman = 20
+
+    while antrean:
+        arsip, kedalaman = antrean.pop(0)
+        arsip = arsip.resolve()
+        if arsip in sudah_diproses:
+            continue
+        sudah_diproses.add(arsip)
+        if kedalaman > batas_kedalaman:
+            raise RuntimeError(
+                f"Arsip bersarang melebihi batas {batas_kedalaman}: {arsip}"
+            )
+
+        tujuan = arsip.with_name(nama_dasar(arsip))
+        if tujuan.exists():
+            raise FileExistsError(
+                f"Folder untuk arsip bersarang sudah ada: {tujuan}"
+            )
+        # Jangan tambahkan komponen folder sementara: GDB di dalam ZIP sering
+        # sudah sangat dekat dengan batas panjang path Windows.
+        try:
+            tujuan.mkdir(parents=False, exist_ok=False)
+            ekstrak_satu_arsip(arsip, tujuan, exe7z, password)
+        except Exception:
+            if tujuan.exists():
+                shutil.rmtree(tujuan, ignore_errors=True)
+            raise
+
+        antrean.extend(
+            (p, kedalaman + 1)
+            for p in tujuan.rglob("*")
+            if p.is_file() and p.suffix.lower() in EKSTENSI
+        )
+
+
 def proses(arsip, sumber, output, exe7z, password, timpa):
     rel = arsip.relative_to(sumber).parent
     tujuan = output / rel / nama_dasar(arsip)
@@ -357,27 +436,14 @@ def proses(arsip, sumber, output, exe7z, password, timpa):
     # Nama temporary dibuat unik untuk setiap arsip.
     import uuid
 
-    sementara = tujuan.with_name(
-        tujuan.name + f".{uuid.uuid4().hex}.partial"
-    )
+    # Nama sementara singkat untuk mengurangi risiko melewati batas path Windows.
+    sementara = tujuan.with_name(f".x{uuid.uuid4().hex[:8]}")
 
     try:
         sementara.mkdir(parents=True, exist_ok=False)
 
-        if arsip.suffix.lower() == ".zip":
-            try:
-                ekstrak_zip(arsip, sementara, password)
-            except NotImplementedError:
-                if not exe7z:
-                    raise
-                ekstrak_7z(exe7z, arsip, sementara, password)
-
-        elif arsip.suffix.lower() == ".rar":
-            if not exe7z:
-                raise RuntimeError(
-                    "7-Zip tidak ditemukan untuk ekstrak RAR"
-                )
-            ekstrak_7z(exe7z, arsip, sementara, password)
+        ekstrak_satu_arsip(arsip, sementara, exe7z, password)
+        ekstrak_arsip_dalam(sementara, exe7z, password)
 
         # Jangan hapus hasil lama secara otomatis.
         # Jika tujuan sudah ada, hentikan dengan pesan jelas.
@@ -398,7 +464,7 @@ def proses(arsip, sumber, output, exe7z, password, timpa):
         # Pastikan parent folder tersedia.
         tujuan.parent.mkdir(parents=True, exist_ok=True)
 
-        sementara.rename(tujuan)
+        pindahkan_hasil(sementara, tujuan)
 
         return arsip, "ok", ""
 
@@ -438,8 +504,8 @@ def main():
         "-w",
         "--worker",
         type=int,
-        default=4,
-        help="jumlah worker paralel (default: 4)"
+        default=1,
+        help="jumlah worker paralel (default: 1; naikkan untuk mempercepat)"
     )
 
     ap.add_argument(

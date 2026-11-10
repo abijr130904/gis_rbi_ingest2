@@ -5,6 +5,13 @@ from shpmerge import merge as merge_mod
 from shpmerge.models import Options
 from shpmerge.pipeline import run_pipeline
 
+import struct
+from pathlib import Path
+
+import numpy as np
+import shapely
+from pyogrio.raw import write as raw_write
+
 N = "ADMINISTRASI_LN_50K"
 
 
@@ -219,7 +226,7 @@ def _dissolved(tmp, out="out"):
 
 def test_dissolve_keeps_region_borders(tmp_path):
     make(tmp_path, "KAB_A", geom="poly", cols=_same(3), x0=0, crs="EPSG:3857")
-    make(tmp_path, "KAB_B", geom="poly", cols=_same(3), x0=3, crs="EPSG:3857")  # menempel di KAB_A
+    make(tmp_path, "KAB_B", geom="poly", cols={"NAMA": ["y"] * 3, "NILAI": [1] * 3}, x0=3, crs="EPSG:3857")
     c = cat(run(tmp_path))
     assert c["status"] == "MERGED" and c["output_features"] == 6
     d = _dissolved(tmp_path)
@@ -239,9 +246,8 @@ def test_dissolve_does_not_merge_different_attributes(tmp_path):
 
 
 def test_dissolve_ignore_column(tmp_path):
-    cols = {"NAMA": ["x"] * 3, "LEMBAR": [1, 2, 3]}
-    make(tmp_path, "KAB_A", geom="poly", cols=cols, crs="EPSG:3857")
-    make(tmp_path, "KAB_B", geom="poly", cols=cols, x0=3, crs="EPSG:3857")
+    make(tmp_path, "KAB_A", geom="poly", cols={"NAMA": ["x"] * 3, "LEMBAR": [1, 2, 3]}, crs="EPSG:3857")
+    make(tmp_path, "KAB_B", geom="poly", cols={"NAMA": ["y"] * 3, "LEMBAR": [1, 2, 3]}, x0=3, crs="EPSG:3857")
     run(tmp_path)
     assert len(_dissolved(tmp_path)) == 6  # LEMBAR berbeda -> tidak menyatu
     run(tmp_path, output_dir=tmp_path / "o2", dissolve_ignore=["LEMBAR"])
@@ -273,3 +279,76 @@ def test_dissolve_sliver_overlap_below_threshold_not_merged(tmp_path):
     make(tmp_path, "KAB_B", geom="poly", cols=_same(3), x0=2.999, crs="EPSG:3857")  # irisan 0,001 dari 3
     cat(run(tmp_path))
     assert len(_dissolved(tmp_path)) == 2
+
+def _write_polys(tmp, region, polys, cols, crs="EPSG:3857", name=N):
+    d = tmp.joinpath("data", region, region)
+    d.mkdir(parents=True, exist_ok=True)
+    gpd.GeoDataFrame(cols, geometry=polys, crs=crs).to_file(d / f"{name}.shp")
+
+
+def test_dissolve_merges_straight_seam_between_files(tmp_path):
+    make(tmp_path, "KAB_A", geom="poly", cols=_same(3), x0=0, crs="EPSG:3857")
+    make(tmp_path, "KAB_B", geom="poly", cols=_same(3), x0=3, crs="EPSG:3857")
+    c = cat(run(tmp_path))
+    d = _dissolved(tmp_path)
+    assert len(d) == 1 and abs(d.geometry.area.iloc[0] - 6.0) < 1e-9
+    assert d["JML_FITUR"].iloc[0] == 6
+    assert any("garis lembar" in w for w in c["warnings"])
+
+
+def test_dissolve_keeps_diagonal_border_between_files(tmp_path):
+    _write_polys(tmp_path, "KAB_A", [Polygon([(0, 0), (2, 0), (0, 2)])], {"NAMA": ["x"]})
+    _write_polys(tmp_path, "KAB_B", [Polygon([(2, 0), (2, 2), (0, 2)])], {"NAMA": ["x"]})
+    cat(run(tmp_path))
+    assert len(_dissolved(tmp_path)) == 2
+
+def _dbf_types(path):
+    b = Path(path).read_bytes()
+    header_len = struct.unpack("<H", b[8:10])[0]
+    out = {}
+    for off in range(32, header_len - 1, 32):
+        d = b[off:off + 32]
+        if d[0] == 0x0D:
+            break
+        out[d[:11].split(b"\0")[0].decode("latin1")] = chr(d[11])
+    return out
+
+
+def make_with_dates(tmp, region, dates, name=N, poly=False, x0=0, nama=None):
+    d = tmp.joinpath("data", region, region)
+    d.mkdir(parents=True, exist_ok=True)
+    n = len(dates)
+    if poly:
+        shapes = [Polygon([(x0 + i, 0), (x0 + i + 1, 0), (x0 + i + 1, 1), (x0 + i, 1)]) for i in range(n)]
+        gtype = "Polygon"
+    else:
+        shapes = [LineString([(i, 0), (i + 1, 1)]) for i in range(n)]
+        gtype = "LineString"
+    geoms = shapely.to_wkb(np.array(shapes, dtype=object))
+    names = [nama or f"{region}_{i}" for i in range(n)]
+    raw_write(str(d / f"{name}.shp"), geoms,
+              [np.array(names, dtype=object), np.array(dates, dtype="datetime64[D]")],
+              ["NAMA", "TGL"], driver="ESRI Shapefile", geometry_type=gtype,
+              crs="EPSG:3857", encoding="UTF-8")
+
+
+def test_date_column_type_and_values_preserved(tmp_path):
+    make_with_dates(tmp_path, "KAB_A", ["2020-01-01", "NaT", "2021-05-06"])
+    make_with_dates(tmp_path, "KAB_B", ["2019-12-31", "2022-02-02"])
+    c = cat(run(tmp_path))
+    assert c["status"] == "MERGED" and c["output_features"] == 5
+    assert _dbf_types(out_path(tmp_path).with_suffix(".dbf"))["TGL"] == "D"
+    df = gpd.read_file(out_path(tmp_path))
+    assert df["TGL"].notna().sum() == 4
+    assert sorted(df["TGL"].dropna().dt.strftime("%Y-%m-%d")) == [
+        "2019-12-31", "2020-01-01", "2021-05-06", "2022-02-02"]
+
+
+def test_dissolved_keeps_date_type(tmp_path):
+    make_with_dates(tmp_path, "KAB_A", ["2020-01-01"] * 3, poly=True, x0=0, nama="x")
+    make_with_dates(tmp_path, "KAB_B", ["2020-01-01"] * 3, poly=True, x0=3, nama="x")
+    cat(run(tmp_path))
+    dpath = tmp_path / "out" / "dissolved" / f"{N}.shp"
+    assert _dbf_types(dpath.with_suffix(".dbf"))["TGL"] == "D"
+    d = gpd.read_file(dpath)
+    assert len(d) == 1 and d["TGL"].notna().all()
